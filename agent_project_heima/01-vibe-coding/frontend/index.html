@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>黑马程序员 — 智能问答系统</title>
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+
+  <!-- 顶部导航栏 -->
+  <nav class="navbar">
+    <div class="navbar-brand">
+      <div class="logo-icon">黑</div>
+      <span>黑马智能问答</span>
+    </div>
+    <div class="navbar-actions">
+      <!-- 即时/流式切换 -->
+      <div class="chat-mode-toggle">
+        <span>流式回答</span>
+        <label class="toggle-switch" title="开启后逐字输出，关闭后一次性返回">
+          <input type="checkbox" id="stream-toggle" />
+          <div class="toggle-track"></div>
+          <div class="toggle-thumb"></div>
+        </label>
+      </div>
+    </div>
+  </nav>
+
+  <!-- 主体：侧边栏 + 聊天区 -->
+  <div class="main-layout">
+
+    <!-- 侧边栏：学科选择 + 新建会话 -->
+    <aside class="sidebar">
+      <div class="sidebar-title">选择学科</div>
+      <div id="subject-list">
+        <!-- 由 JS 动态填充 -->
+      </div>
+      <div class="sidebar-divider"></div>
+      <button class="new-chat-btn" id="new-chat-btn">
+        <span>＋</span>
+        <span>新建对话</span>
+      </button>
+    </aside>
+
+    <!-- 聊天主区域 -->
+    <div class="chat-container">
+
+      <!-- 聊天顶部栏：当前学科 + 清空按钮 -->
+      <div class="chat-header">
+        <div class="chat-header-left">
+          <span class="chat-subject-badge" id="subject-badge">不限学科</span>
+        </div>
+        <button class="clear-btn" id="clear-btn" title="清空历史记录">
+          🗑 清空历史
+        </button>
+      </div>
+
+      <!-- 消息列表 -->
+      <div class="messages-area" id="messages-area">
+
+        <!-- 欢迎占位（无消息时显示） -->
+        <div class="welcome-placeholder" id="welcome-placeholder">
+          <div class="welcome-icon">🎓</div>
+          <h2>你好，同学！</h2>
+          <p>
+            我是黑马程序员智能学习助手，可以为你解答
+            <strong>人工智能、Java、软件测试、运维、大数据</strong>
+            等技术问题，24 小时在线，随时为你服务。
+          </p>
+          <p style="margin-top:8px;color:#9CA3AF;font-size:13px;">
+            在下方输入框中输入问题即可开始 👇
+          </p>
+        </div>
+
+      </div><!-- /.messages-area -->
+
+      <!-- 输入区域 -->
+      <div class="input-area">
+        <div class="input-box">
+          <textarea
+            id="question-input"
+            placeholder="输入你的技术问题，Enter 发送，Shift+Enter 换行…"
+            rows="1"
+          ></textarea>
+          <button class="send-btn" id="send-btn" title="发送 (Enter)">➤</button>
+        </div>
+        <div class="input-hint">
+          <span>提示：可在左侧选择学科，获得更精准的答案</span>
+        </div>
+      </div>
+
+    </div><!-- /.chat-container -->
+  </div><!-- /.main-layout -->
+
+  <script src="/js/app.js"></script>
+</body>
+</html>
