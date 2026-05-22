@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>黑马程序员 — 知识库管理</title>
+  <link rel="stylesheet" href="/css/style.css" />
+  <link rel="stylesheet" href="/css/upload.css" />
+</head>
+<body>
+
+  <!-- 顶部导航栏 -->
+  <nav class="navbar">
+    <div class="navbar-brand">
+      <div class="logo-icon">黑</div>
+      <span>黑马知识库管理</span>
+    </div>
+    <div class="navbar-actions">
+      <a href="/" class="nav-link-btn">← 返回问答</a>
+    </div>
+  </nav>
+
+  <div class="upload-layout">
+
+    <!-- 左侧：上传操作区 -->
+    <div class="upload-panel">
+
+      <!-- 学科选择 -->
+      <div class="form-section">
+        <label class="form-label">选择学科 <span class="required">*</span></label>
+        <div id="subject-chips" class="chip-group">
+          <!-- 由 JS 动态填充 -->
+        </div>
+      </div>
+
+      <!-- 拖拽上传区 -->
+      <div class="dropzone" id="dropzone">
+        <div class="dropzone-icon">📂</div>
+        <div class="dropzone-title">拖拽文件或文件夹到此处</div>
+        <div class="dropzone-sub">或点击下方按钮选择文件</div>
+
+        <!-- 隐藏的文件选择器（多文件） -->
+        <input type="file" id="file-input" multiple hidden />
+        <!-- 隐藏的文件夹选择器 -->
+        <input type="file" id="folder-input" multiple webkitdirectory hidden />
+
+        <div class="dropzone-btns">
+          <button class="pick-btn" id="pick-files-btn">选择多个文件</button>
+          <button class="pick-btn pick-btn--secondary" id="pick-folder-btn">选择整个文件夹</button>
+        </div>
+
+        <div class="dropzone-hint">
+          支持: PDF · DOCX · XLSX · CSV · PPTX · TXT · MD · PNG · JPG
+        </div>
+      </div>
+
+      <!-- 已选文件列表 -->
+      <div id="file-list-section" class="file-list-section" hidden>
+        <div class="file-list-header">
+          <span id="file-count-label">已选 0 个文件</span>
+          <button class="clear-files-btn" id="clear-files-btn">清空</button>
+        </div>
+        <div id="file-list" class="file-list"></div>
+      </div>
+
+      <!-- 上传按钮 -->
+      <button class="upload-btn" id="upload-btn" disabled>
+        <span id="upload-btn-text">上传并入库</span>
+        <span id="upload-spinner" class="spinner" hidden></span>
+      </button>
+
+    </div><!-- /.upload-panel -->
+
+    <!-- 右侧：已入库文档列表 -->
+    <div class="docs-panel">
+      <div class="docs-panel-header">
+        <span class="docs-title">已入库文档</span>
+        <div class="docs-filter">
+          <select id="filter-subject" class="filter-select">
+            <option value="">全部学科</option>
+          </select>
+          <button class="refresh-btn" id="refresh-btn" title="刷新">⟳</button>
+        </div>
+      </div>
+      <div id="docs-list" class="docs-list">
+        <div class="docs-empty">加载中…</div>
+      </div>
+      <div class="docs-pagination">
+        <button class="page-btn" id="prev-page-btn" disabled>‹ 上一页</button>
+        <span id="page-info" class="page-info">第 1 页</span>
+        <button class="page-btn" id="next-page-btn" disabled>下一页 ›</button>
+      </div>
+    </div><!-- /.docs-panel -->
+
+  </div><!-- /.upload-layout -->
+
+  <!-- 上传结果弹窗 -->
+  <div class="modal-overlay" id="result-modal" hidden>
+    <div class="modal">
+      <div class="modal-header">
+        <span class="modal-title">入库结果</span>
+        <button class="modal-close" id="modal-close-btn">×</button>
+      </div>
+      <div id="modal-body" class="modal-body"></div>
+      <div class="modal-footer">
+        <button class="modal-ok-btn" id="modal-ok-btn">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/js/upload.js"></script>
+</body>
+</html>
