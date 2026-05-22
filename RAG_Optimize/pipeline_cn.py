@@ -6,8 +6,8 @@ import asyncio, hashlib, time, logging
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
-from models.chinese_models import BGEEmbedder, BGEReranker, InternVLVision, PaddleOCREngine
-from storage.milvus_store import MilvusMultiTenantStore
+from models.chinese_model import BGEEmbedder, BGEReranker, InternVLVision, PaddleOCREngine
+from stroge.milvus_store import MilvusMultiTenantStore
 from search.hybrid_engine import HybridSearchEngine
 from tenant.manager import TenantManager
 from monitoring.metrics import rag_metrics, start_metrics_server
@@ -178,9 +178,9 @@ class ChinesePDFRAGPipeline:
 
     async def _process_elements_async(self, elements, pdf_path, meta):
         """并发处理文本/表格/图片元素"""
-        from document_analyzer import DocumentElement
-        from table_extractor import EnterpriseTableExtractor
-        from chunker import SemanticChunker
+        from document_analyzer.document_analyzer import DocumentElement
+        from document_analyzer.table_extractor import EnterpriseTableExtractor
+        from document_analyzer.chunker import SemanticChunker
 
         table_ext = EnterpriseTableExtractor(vision_model=self.vision)
         chunker = SemanticChunker()
@@ -252,7 +252,7 @@ async def main():
         "milvus_host":    "localhost",
         "milvus_port":    19530,
         "redis_url":      "redis://localhost:6379/0",
-        "device":         "cuda",
+        "device":         "cpu",
         "workers":        4,
         "metrics_port":   8000,
     }

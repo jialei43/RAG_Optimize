@@ -1,8 +1,8 @@
+import os  # 读取 API Key 环境变量
 import re  # 正则清洗用户输入
 from typing import Optional  # 类型注解
 
-import dashscope  # DashScope Embedding API
-from dashscope import TextEmbedding  # 文本向量化接口
+from openai import OpenAI  # OpenAI 兼容客户端（DashScope 兼容模式）
 
 from app import config  # 读取检索参数
 from app.database.milvus_client import milvus_client  # 向量检索
@@ -12,21 +12,34 @@ from app.utils.logger import get_logger  # 获取命名 Logger
 
 logger = get_logger("modules.rag")  # 模块专属日志
 
-dashscope.api_key = config.llm.api_key  # 初始化 DashScope API Key
+_EMBED_MODEL = "text-embedding-v3"  # 与入库侧保持一致
+_EMBED_DIM = 1024  # 与 Milvus collection schema 对齐
+_embed_client: Optional[OpenAI] = None  # 延迟初始化，避免导入时需要 API Key
+
+
+def _get_embed_client() -> OpenAI:
+    """惰性初始化 Embedding 客户端。"""
+    global _embed_client
+    if _embed_client is None:
+        _embed_client = OpenAI(
+            api_key=os.environ.get("DASHSCOPE_API_KEY", config.llm.api_key),
+            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        )
+    return _embed_client
 
 
 def _embed_query(text: str) -> list[float]:
     """
-    调用 DashScope text-embedding-v3 将查询文本向量化。
+    调用 DashScope text-embedding-v3 将查询文本向量化（dim=1024，与入库侧一致）。
     失败时抛出异常，由上层处理降级逻辑。
     """
-    resp = TextEmbedding.call(
-        model=TextEmbedding.Models.text_embedding_v3,  # 与 Milvus 向量维度 1536 匹配
-        input=text,
+    client = _get_embed_client()
+    resp = client.embeddings.create(
+        model=_EMBED_MODEL,
+        input=[text],  # 单条输入
+        dimensions=_EMBED_DIM,
     )
-    if resp.status_code != 200:  # 非 200 表示 API 调用失败
-        raise RuntimeError(f"Embedding API 调用失败: {resp.message}")
-    return resp.output["embeddings"][0]["embedding"]  # 提取第一条向量
+    return resp.data[0].embedding  # 提取向量
 
 
 def _fetch_parent_chunks(parent_ids: list[str]) -> list[dict]:
@@ -78,7 +91,7 @@ def retrieve(question: str, subject: Optional[str] = None) -> dict:
         results = milvus_client.search(
             query_vectors=[query_vector],
             limit=config.retrieval.retrieval_k,    # 初检 Top-K
-            output_fields=["parent_id", "subject", "content"],
+            output_fields=["parent_id", "source"],  # collection schema 只有这两个标量字段
             filter_expr=filter_expr,
         )
     except Exception as e:
@@ -89,10 +102,10 @@ def retrieve(question: str, subject: Optional[str] = None) -> dict:
     logger.debug(f"子块检索返回 {len(hits)} 条结果")
 
     # Step 3: 去重父块 ID，取前 candidate_m 个
-    seen_ids: list[str] = []
+    seen_ids: list[int] = []  # parent_id 为 INT64
     for hit in hits:
-        pid = hit.get("entity", {}).get("parent_id") or hit.get("parent_id", "")
-        if pid and pid not in seen_ids:  # 去重
+        pid = hit.get("entity", {}).get("parent_id") or hit.get("parent_id")
+        if pid is not None and pid not in seen_ids:  # 去重
             seen_ids.append(pid)
         if len(seen_ids) >= config.retrieval.candidate_m:  # 达到目标数量后停止
             break

@@ -1,6 +1,6 @@
 # 黑马程序员智能问答系统 — 项目执行手册
 
-**版本**: v1.0.0  
+**版本**: v1.1.0  
 **日期**: 2026-05-19  
 **适用对象**: 新人入职、运维人员、测试工程师  
 **关联文档**:
@@ -39,7 +39,8 @@
 | **缓存/会话** | Redis 7.0（会话管理、学科缓存） |
 | **前端** | 原生 HTML + CSS + JS（无需打包） |
 | **Python 版本** | 3.11 |
-| **测试用例** | 144 个，100% 通过 |
+| **测试用例** | 168 个，100% 通过 |
+| **知识库管理** | 文件上传入库（PDF/DOCX/XLSX/CSV/PPTX/TXT/MD/图片） |
 
 **支持学科**：人工智能 / Java 开发 / 软件测试 / 运维与云计算 / 大数据
 
@@ -138,7 +139,7 @@ vim documents/config.ini
 ```ini
 [mysql]
 host = localhost        # MySQL 地址
-user = edu_rag          # 数据库用户名
+user = root             # 数据库用户名（或自定义有权限的用户）
 password = 123456       # 密码（也可通过环境变量 MYSQL_PASSWORD 覆盖）
 database = subjects_kg  # 数据库名
 
@@ -158,16 +159,14 @@ log_file = /your/path/logs/app.log   # 改为本机有写权限的路径
 ### Step 7 — 初始化数据库
 
 ```bash
-# 创建 MySQL 数据库和用户（使用 root 权限执行）
+# 创建 MySQL 数据库（使用 root 或有权限的用户执行）
 mysql -u root -p << 'EOF'
 CREATE DATABASE IF NOT EXISTS subjects_kg DEFAULT CHARSET utf8mb4;
-CREATE USER IF NOT EXISTS 'edu_rag'@'localhost' IDENTIFIED BY '123456';
-GRANT ALL ON subjects_kg.* TO 'edu_rag'@'localhost';
 FLUSH PRIVILEGES;
 EOF
 ```
 
-建表语句见本文 [§11 数据库初始化](#11-数据库初始化)。
+> **说明**：应用表结构（`subject` / `document` / `parent_chunk`）由入库模块在首次运行时**自动幂等创建**，无需手动建表。详见 §11。
 
 ### Step 8 — 启动应用
 
@@ -187,8 +186,11 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
 # 健康检查
 curl http://localhost:8000/api/v1/health
 
-# 访问前端页面
+# 访问前端问答页面
 open http://localhost:8000
+
+# 访问知识库管理页面
+open http://localhost:8000/upload.html
 ```
 
 预期健康检查响应：
@@ -208,6 +210,38 @@ open http://localhost:8000
 }
 ```
 
+### Step 10 — 数据入库（可选，首次使用知识库）
+
+**方式 A：前端页面上传（推荐新人使用）**
+
+1. 浏览器访问 `http://localhost:8000/upload.html`
+2. 点击学科 Chip 选择目标学科
+3. 点击「选择多个文件」或「选择整个文件夹」，或直接拖拽文件到上传区
+4. 点击「上传并入库」
+
+**方式 B：CLI 命令行**
+
+```bash
+conda activate vibe_coding
+cd /path/to/01-vibe-coding
+
+# 入库整个目录
+python scripts/ingest_data.py \
+  --dir documents/data/ai_data \
+  --subject ai \
+  --name 人工智能
+
+# 入库单个文件
+python scripts/ingest_data.py \
+  --file /path/to/file.pdf \
+  --subject java \
+  --name "Java开发"
+```
+
+**前提**：`DASHSCOPE_API_KEY` 环境变量必须已设置（用于向量化）。
+
+建表语句见本文 [§11 数据库初始化](#11-数据库初始化)。
+
 ---
 
 ## 4. 配置说明
@@ -226,7 +260,7 @@ documents/config.ini     # 主配置文件（提交至 Git，不含敏感密码�
 # ── MySQL ────────────────────────────────────────
 [mysql]
 host     = localhost       # 数据库主机，远程填 IP
-user     = edu_rag         # 数据库用户名
+user     = root            # 数据库用户名（需有 subjects_kg 的 ALL 权限）
 password = 123456          # 密码（环境变量 MYSQL_PASSWORD 优先级更高）
 database = subjects_kg     # 数据库名
 
@@ -436,7 +470,8 @@ python -m pytest tests/test_chat_api.py -v
 | `test_system_api.py` | `app/routers/system.py` | 10 |
 | `test_sessions_api.py` | `app/routers/sessions.py` | 13 |
 | `test_chat_api.py` | `app/routers/chat.py` | 14 |
-| **合计** | | **144** |
+| `test_ingest.py` | `app/ingest/` 文件解析/分块/向量化/入库 | 24 |
+| **合计** | | **168** |
 
 > 所有测试均使用 Mock，**不依赖真实数据库连接**，可在任何环境执行。
 
@@ -485,15 +520,33 @@ curl -s -X POST $BASE/chat/stream \
 
 ### 7.3 API 速查表
 
+**问答与会话**
+
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/api/v1/health` | 系统健康检查 |
-| GET | `/api/v1/subjects` | 获取学科列表 |
+| GET | `/api/v1/subjects` | 获取学科列表（带 Redis 缓存） |
 | POST | `/api/v1/sessions` | 创建新会话 |
 | GET | `/api/v1/sessions/{id}/history` | 获取对话历史（分页） |
 | DELETE | `/api/v1/sessions/{id}/history` | 清空对话历史 |
 | POST | `/api/v1/chat` | 即时问答 |
 | POST | `/api/v1/chat/stream` | 流式问答（SSE） |
+
+**知识库管理（v1.1 新增）**
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/v1/ingest/upload` | 上传文件并入库（multipart/form-data，支持批量） |
+| GET | `/api/v1/ingest/subjects` | 获取学科列表及支持的文件格式 |
+| GET | `/api/v1/ingest/documents` | 查询已入库文档（支持学科筛选+分页） |
+
+**前端页面**
+
+| URL | 说明 |
+|-----|------|
+| `http://localhost:8000/` | 学生问答主页 |
+| `http://localhost:8000/upload.html` | 知识库管理页面（上传入库） |
+| `http://localhost:8000/docs` | Swagger API 文档 |
 
 ---
 
@@ -550,17 +603,53 @@ redis-cli INFO memory | grep used_memory_human
 
 ```bash
 # 连接数据库
-mysql -u edu_rag -p subjects_kg
+mysql -u root -p subjects_kg
+
+# 查看各学科入库文档数量
+SELECT subject_code, COUNT(*) AS doc_count FROM document GROUP BY subject_code;
 
 # 查看各学科父块数量
 SELECT subject, COUNT(*) AS chunk_count FROM parent_chunk GROUP BY subject;
 
-# 查看文档处理状态
-SELECT status, COUNT(*) FROM document GROUP BY status;
-# status: 0=待处理, 1=已入库, 2=处理失败
+# 查看最近入库的 10 个文档
+SELECT id, subject_code, filename, chunk_count, created_at
+FROM document ORDER BY created_at DESC LIMIT 10;
 
-# 查看失败文档
-SELECT id, title, file_path FROM document WHERE status = 2;
+# 清除某学科所有数据（谨慎操作！）
+-- DELETE FROM parent_chunk WHERE subject = 'ai';
+-- DELETE FROM document WHERE subject_code = 'ai';
+```
+
+### 8.7 知识库入库运维
+
+```bash
+# CLI 批量入库（需 DASHSCOPE_API_KEY 已配置）
+conda activate vibe_coding
+export DASHSCOPE_API_KEY=sk-xxxx
+
+python scripts/ingest_data.py \
+  --dir /path/to/data \
+  --subject ai \
+  --name 人工智能
+
+# 查看支持的文件格式
+python -c "from app.ingest.file_parser import SUPPORTED_EXTENSIONS; print(sorted(SUPPORTED_EXTENSIONS))"
+
+# 检查 Milvus 向量总数
+python3 -c "
+from pymilvus import MilvusClient
+c = MilvusClient(uri='http://localhost:19530', db_name='itcast')
+stats = c.get_collection_stats('edurag_bj29')
+print('向量总数:', stats)
+"
+
+# 若需重建 Milvus 集合（谨慎：会丢失所有向量！）
+python3 -c "
+from pymilvus import MilvusClient
+c = MilvusClient(uri='http://localhost:19530', db_name='itcast')
+c.drop_collection('edurag_bj29')
+print('已删除集合，下次入库时将自动重建（dim=1024）')
+"
 ```
 
 ### 8.5 Milvus 运维
@@ -761,7 +850,49 @@ chmod 755 /your/log/path
 
 ---
 
-### Q8：测试全部失败（import 报错）
+### Q8：文件上传入库失败（`503 DASHSCOPE_API_KEY 未配置`）
+
+```bash
+# 确认环境变量已设置
+echo $DASHSCOPE_API_KEY   # 不应为空
+
+# 若使用 systemd，确认 EnvironmentFile 中包含此变量
+sudo systemctl cat vibe-coding | grep EnvironmentFile
+
+# 临时手动注入环境变量并重启
+export DASHSCOPE_API_KEY=sk-xxxx
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+---
+
+### Q9：入库报错 `batch size is invalid` 或 `dimension is invalid`
+
+这是 DashScope text-embedding-v3 的 API 限制：
+
+- **批次限制**：单次最多 10 条（已内置，无需手动调整）
+- **维度限制**：有效值为 `[64, 128, 256, 512, 768, 1024]`，**不支持 1536**
+
+若出现此错误，检查 `app/ingest/embedder.py` 中的 `_EMBED_DIM` 和 `_BATCH_SIZE`：
+
+```python
+_EMBED_DIM = 1024   # ← 必须为 API 有效值之一
+_BATCH_SIZE = 10    # ← 不超过 10
+```
+
+Milvus collection 的 `dim` 必须与 `_EMBED_DIM` 一致。若不一致，需先删除集合再重建：
+
+```bash
+python3 -c "
+from pymilvus import MilvusClient
+MilvusClient(uri='http://localhost:19530', db_name='itcast').drop_collection('edurag_bj29')
+print('已删除，下次入库时自动重建')
+"
+```
+
+---
+
+### Q10：测试全部失败（import 报错）
 
 ```bash
 # 确认在项目根目录执行 pytest，而非子目录
@@ -778,56 +909,50 @@ cat pyproject.toml | grep -A5 "\[tool.pytest"
 
 ### 11.1 MySQL 建库建表
 
+> **注意**：以下表结构由 `app/ingest/ingestor.py` 的 `_ensure_mysql_schema()` **自动幂等创建**，首次运行入库时无需手动执行。此处仅供参考和手动恢复使用。
+
 ```sql
--- 1. 创建数据库和用户（root 权限执行）
+-- 1. 创建数据库（root 权限执行）
 CREATE DATABASE IF NOT EXISTS subjects_kg DEFAULT CHARSET utf8mb4;
-CREATE USER IF NOT EXISTS 'edu_rag'@'localhost' IDENTIFIED BY '123456';
-GRANT ALL ON subjects_kg.* TO 'edu_rag'@'localhost';
 FLUSH PRIVILEGES;
 
 -- 2. 切换到 subjects_kg 数据库
 USE subjects_kg;
 
 -- 3. 学科元数据表
-CREATE TABLE IF NOT EXISTS subject (
-    id          INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    code        VARCHAR(32) NOT NULL UNIQUE COMMENT '学科代码',
-    name        VARCHAR(64) NOT NULL            COMMENT '学科中文名称',
-    description TEXT                            COMMENT '学科简介',
-    is_active   TINYINT(1)  NOT NULL DEFAULT 1,
-    created_at  DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at  DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE IF NOT EXISTS `subject` (
+    `id`         INT AUTO_INCREMENT PRIMARY KEY,
+    `code`       VARCHAR(50) NOT NULL UNIQUE COMMENT '学科代码，如 ai / java',
+    `name`       VARCHAR(100) NOT NULL            COMMENT '学科中文名称',
+    `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='学科信息表';
 
--- 4. 原始文档表
-CREATE TABLE IF NOT EXISTS document (
-    id          BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    subject_id  INT UNSIGNED NOT NULL,
-    title       VARCHAR(256) NOT NULL,
-    file_path   VARCHAR(512) NOT NULL,
-    file_type   VARCHAR(16)  NOT NULL,
-    chunk_count INT NOT NULL DEFAULT 0,
-    status      TINYINT(1)   NOT NULL DEFAULT 0  COMMENT '0待处理 1已入库 2失败',
-    created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    FOREIGN KEY (subject_id) REFERENCES subject(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+-- 4. 已入库文档表
+CREATE TABLE IF NOT EXISTS `document` (
+    `id`           INT AUTO_INCREMENT PRIMARY KEY,
+    `subject_code` VARCHAR(50)  NOT NULL          COMMENT '所属学科代码',
+    `filename`     VARCHAR(255) NOT NULL          COMMENT '原始文件名',
+    `filepath`     VARCHAR(512) NOT NULL          COMMENT '入库时文件绝对路径',
+    `char_count`   INT DEFAULT 0                  COMMENT '提取文本字符数',
+    `chunk_count`  INT DEFAULT 0                  COMMENT '父块数量',
+    `created_at`   DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY `uq_filepath` (`filepath`(255))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='已入库文档表';
 
 -- 5. 父块内容表（RAG 核心）
-CREATE TABLE IF NOT EXISTS parent_chunk (
-    id          VARCHAR(64)  NOT NULL PRIMARY KEY COMMENT '与 Milvus child 的 parent_id 对应',
-    document_id BIGINT UNSIGNED NOT NULL,
-    subject     VARCHAR(32)  NOT NULL,
-    content     MEDIUMTEXT   NOT NULL,
-    chunk_index INT NOT NULL,
-    token_count INT NOT NULL DEFAULT 0,
-    created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (document_id) REFERENCES document(id),
-    INDEX idx_subject (subject)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE IF NOT EXISTS `parent_chunk` (
+    `id`          INT AUTO_INCREMENT PRIMARY KEY, -- Milvus child 的 parent_id 引用此字段
+    `document_id` INT NOT NULL                   COMMENT '所属文档 ID',
+    `subject`     VARCHAR(50) NOT NULL           COMMENT '学科代码（冗余）',
+    `chunk_index` INT NOT NULL                   COMMENT '在文档中的顺序编号（0-based）',
+    `content`     MEDIUMTEXT NOT NULL            COMMENT '父块全文',
+    `created_at`  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    INDEX `idx_document_id` (`document_id`),
+    INDEX `idx_subject`     (`subject`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='父块存储表';
 
 -- 6. 初始化学科数据
-INSERT IGNORE INTO subject (code, name) VALUES
+INSERT IGNORE INTO `subject` (code, name) VALUES
   ('ai',      '人工智能'),
   ('java',    'Java 开发'),
   ('test',    '软件测试'),
@@ -837,39 +962,34 @@ INSERT IGNORE INTO subject (code, name) VALUES
 
 ### 11.2 Milvus 集合初始化
 
+> **注意**：集合由 `app/ingest/ingestor.py` 的 `_ensure_milvus_collection()` **自动幂等创建**，首次运行入库时无需手动执行。
+
 ```python
-# 在 vibe_coding 环境中执行
-from pymilvus import MilvusClient, DataType, FieldSchema, CollectionSchema
+# 手动创建（恢复场景）—— 在 vibe_coding 环境中执行
+from pymilvus import MilvusClient, DataType
 
 client = MilvusClient(uri="http://localhost:19530", db_name="itcast")
 
-# 定义 Schema
-fields = [
-    FieldSchema(name="id",        dtype=DataType.INT64,        is_primary=True, auto_id=True),
-    FieldSchema(name="parent_id", dtype=DataType.VARCHAR,       max_length=64),
-    FieldSchema(name="source",    dtype=DataType.VARCHAR,       max_length=32),
-    FieldSchema(name="content",   dtype=DataType.VARCHAR,       max_length=2048),
-    FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR,  dim=1536),
-]
-schema = CollectionSchema(fields=fields, enable_dynamic_field=False)
+schema = client.create_schema(auto_id=True, enable_dynamic_field=False)
+schema.add_field("id",        DataType.INT64,        is_primary=True, auto_id=True)
+schema.add_field("vector",    DataType.FLOAT_VECTOR, dim=1024)          # dim=1024，非 1536
+schema.add_field("parent_id", DataType.INT64)                           # 对应 MySQL parent_chunk.id
+schema.add_field("source",    DataType.VARCHAR,      max_length=50)     # 学科代码过滤字段
 
-# 创建集合
+index_params = client.prepare_index_params()
+index_params.add_index(
+    field_name="vector",
+    index_type="IVF_FLAT",
+    metric_type="IP",
+    params={"nlist": 128},
+)
+
 client.create_collection(
     collection_name="edurag_bj29",
     schema=schema,
+    index_params=index_params,
 )
-
-# 创建向量索引
-client.create_index(
-    collection_name="edurag_bj29",
-    index_params=[{
-        "field_name": "embedding",
-        "index_type": "IVF_FLAT",
-        "metric_type": "IP",
-        "params": {"nlist": 1024},
-    }],
-)
-print("Milvus 集合初始化完成")
+print("Milvus 集合初始化完成（dim=1024）")
 ```
 
 ---
@@ -879,12 +999,18 @@ print("Milvus 集合初始化完成")
 ```
 01-vibe-coding/
 ├── app/                          后端应用
-│   ├── main.py                   FastAPI 入口，路由挂载
+│   ├── main.py                   FastAPI 入口，路由挂载（含 ingest 路由）
 │   ├── config.py                 配置读取（config.ini + 环境变量）
 │   ├── database/
 │   │   ├── mysql_client.py       MySQL 连接池封装
 │   │   ├── redis_client.py       Redis 连接池封装
 │   │   └── milvus_client.py      Milvus 客户端封装
+│   ├── ingest/                   知识库入库模块（v1.1 新增）
+│   │   ├── __init__.py
+│   │   ├── file_parser.py        多格式文件解析（PDF/DOCX/XLSX/CSV/PPTX/TXT/MD/图片）
+│   │   ├── text_chunker.py       父子两级分块（1200/300/50，从 config 读取）
+│   │   ├── embedder.py           子块向量化（DashScope text-embedding-v3，批次≤10，dim=1024）
+│   │   └── ingestor.py           入库主流程（幂等 DDL + 双写 MySQL/Milvus）
 │   ├── modules/
 │   │   ├── session_manager.py    会话创建/历史/清空（Redis）
 │   │   ├── subject_manager.py    学科列表查询（Redis 缓存）
@@ -894,12 +1020,15 @@ print("Milvus 集合初始化完成")
 │   ├── routers/
 │   │   ├── system.py             GET /health, GET /subjects
 │   │   ├── sessions.py           POST/GET/DELETE /sessions
-│   │   └── chat.py               POST /chat, POST /chat/stream
+│   │   ├── chat.py               POST /chat, POST /chat/stream
+│   │   └── ingest.py             POST /ingest/upload, GET /ingest/subjects|documents
 │   ├── models/
 │   │   └── schemas.py            Pydantic 请求/响应模型
 │   └── utils/
 │       └── logger.py             结构化日志工具
-├── tests/                        测试套件（144 个用例）
+├── scripts/
+│   └── ingest_data.py            CLI 入库脚本（--file / --dir --subject --name）
+├── tests/                        测试套件（168 个用例）
 │   ├── conftest.py               共享 fixtures
 │   ├── test_config.py
 │   ├── test_logger.py
@@ -911,13 +1040,23 @@ print("Milvus 集合初始化完成")
 │   ├── test_qa_engine.py
 │   ├── test_system_api.py
 │   ├── test_sessions_api.py
-│   └── test_chat_api.py
+│   ├── test_chat_api.py
+│   └── test_ingest.py            文件解析/分块/向量化/入库流程测试（24 个用例）
 ├── frontend/                     前端（原生 HTML/CSS/JS）
-│   ├── index.html                主页面
-│   ├── css/style.css             样式文件
-│   └── js/app.js                 交互逻辑（SSE、学科切换、会话管理）
+│   ├── index.html                学生问答主页面（含"知识库管理"导航链接）
+│   ├── upload.html               知识库管理页面（文件上传/入库/文档列表）
+│   ├── css/
+│   │   ├── style.css             全局样式（问答页）
+│   │   └── upload.css            上传页面专属样式
+│   └── js/
+│       ├── app.js                问答页交互逻辑（SSE、学科切换、会话管理）
+│       └── upload.js             上传页面逻辑（拖拽/多选/文件夹/入库结果弹窗）
 ├── documents/
 │   ├── config.ini                主配置文件
+│   ├── data/                     示例数据
+│   │   └── ai_data/              人工智能学科示例文档
+│   │       ├── LLM基础知识.pdf
+│   │       └── 人工智能就业课课程大纲.docx
 │   ├── product_requirement_document.md
 │   ├── technical_design_document.md
 │   └── operation_manual.md       本文档
@@ -925,6 +1064,17 @@ print("Milvus 集合初始化完成")
 ├── requirements.txt              Python 依赖锁定版本
 └── .env.example                  环境变量示例模板
 ```
+
+---
+
+---
+
+## 13. 变更记录
+
+| 版本 | 日期 | 主要变更 |
+|------|------|----------|
+| v1.0.0 | 2026-05-19 | 初始版本：RAG 问答、会话管理、前端页面，144 个测试 |
+| v1.1.0 | 2026-05-19 | 新增知识库入库模块及上传接口、知识库管理前端页面；MySQL 用户改为 root；Embedding 维度修正为 1024；测试增至 168 个 |
 
 ---
 

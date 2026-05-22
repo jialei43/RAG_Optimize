@@ -1,8 +1,8 @@
 # 黑马程序员智能问答系统 — 技术设计文档 (TDD)
 
-**版本**: v1.0.0  
+**版本**: v1.1.0  
 **日期**: 2026-05-19  
-**状态**: 草稿  
+**状态**: 正式  
 **作者**: 技术架构组  
 **关联文档**: [产品需求文档 PRD](./product_requirement_document.md)
 
@@ -18,6 +18,7 @@
    - 4.2 会话管理模块
    - 4.3 LLM 集成模块
    - 4.4 学科过滤模块
+   - 4.5 知识库入库模块（v1.1 新增）
 5. [数据库设计](#5-数据库设计)
 6. [API 接口设计](#6-api-接口设计)
 7. [部署架构](#7-部署架构)
@@ -68,7 +69,7 @@
 ┌──────────────────────────────────────────────────────────────────────┐
 │                          客户端层 (Client Layer)                      │
 │   Browser / Mobile (PC · Tablet · Phone)                             │
-│   HTTP/HTTPS + SSE (流式模式)                                         │
+│   HTTP/HTTPS + SSE (流式模式) · multipart/form-data (文件上传)        │
 └─────────────────────────────┬────────────────────────────────────────┘
                               │
 ┌─────────────────────────────▼────────────────────────────────────────┐
@@ -84,6 +85,11 @@
 │  │  Session    │  │  QA Engine   │  │  Subject    │  │  Health   │  │
 │  │  Manager    │  │              │  │  Manager    │  │  Check    │  │
 │  └──────┬──────┘  └──────┬───────┘  └──────┬──────┘  └───────────┘  │
+│                                                                      │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │  知识库入库管道（Ingest Pipeline）                             │   │
+│  │  文件解析 → 父子分块 → Embedding → MySQL + Milvus 双写        │   │
+│  └──────────────────────────────────────────────────────────────┘   │
 │         │                │                  │                        │
 │         └────────────────┼──────────────────┘                       │
 │                          │                                           │
@@ -147,11 +153,20 @@ uvicorn[standard]>=0.29   # ASGI 服务器
 pymysql>=1.1              # MySQL 驱动
 redis>=5.0                # Redis 客户端
 pymilvus>=2.4             # Milvus 客户端
-dashscope>=1.19           # DashScope SDK (LLM + Embedding)
+openai>=1.0               # OpenAI 兼容客户端（接入 DashScope）
+dashscope>=1.19           # DashScope SDK (LLM)
 langchain>=0.2            # RAG 编排框架
 langchain-community>=0.2  # 向量检索器集成
 pydantic>=2.7             # 数据校验
 python-dotenv>=1.0        # 环境变量加载
+# ── 文件解析（v1.1 新增）───────────────────────────────────────
+pypdf>=4.0                # PDF 文本提取
+python-docx>=1.0          # DOCX 文档解析（含表格）
+openpyxl>=3.1             # Excel (.xlsx/.xlsm) 解析
+python-pptx>=1.0          # PowerPoint (.pptx) 解析
+Pillow>=10.0              # 图片元信息读取
+python-multipart>=0.0.9   # FastAPI multipart/form-data 文件上传
+socksio>=1.0              # SOCKS 代理支持（httpx 依赖）
 ```
 
 ---
@@ -220,14 +235,15 @@ candidate_m       = 3      # 最终送入 LLM 的父块数
 
 ```python
 # Collection: edurag_bj29  (database: itcast)
+# 由 app/ingest/ingestor.py _ensure_milvus_collection() 幂等创建
 fields = [
-    FieldSchema(name="id",         dtype=DataType.INT64,         is_primary=True, auto_id=True),
-    FieldSchema(name="parent_id",  dtype=DataType.VARCHAR,       max_length=64),   # 关联父块 ID
-    FieldSchema(name="source",     dtype=DataType.VARCHAR,       max_length=32),   # 学科来源
-    FieldSchema(name="content",    dtype=DataType.VARCHAR,       max_length=2048), # 子块文本
-    FieldSchema(name="embedding",  dtype=DataType.FLOAT_VECTOR,  dim=1536),        # 向量维度
+    FieldSchema(name="id",        dtype=DataType.INT64,        is_primary=True, auto_id=True),
+    FieldSchema(name="vector",    dtype=DataType.FLOAT_VECTOR, dim=1024),         # 子块向量（dim=1024）
+    FieldSchema(name="parent_id", dtype=DataType.INT64),                          # 关联 MySQL parent_chunk.id
+    FieldSchema(name="source",    dtype=DataType.VARCHAR,      max_length=50),    # 学科代码（用于过滤）
 ]
-# 索引策略: IVF_FLAT，nlist=1024，metric_type=IP（内积相似度）
+# 索引策略: IVF_FLAT，nlist=128，metric_type=IP（内积相似度）
+# 注意: text-embedding-v3 有效维度为 [64,128,256,512,768,1024]，不支持 1536
 ```
 
 ### 4.2 会话管理模块
@@ -327,6 +343,84 @@ LLM 调用失败
     └── 服务异常 (5xx)    → 记录错误日志，返回兜底语，触发告警
 ```
 
+### 4.5 知识库入库模块（v1.1 新增）
+
+#### 4.5.1 模块位置
+
+```
+app/ingest/
+├── file_parser.py    # 多格式文件解析（16 种格式）
+├── text_chunker.py   # 父子两级分块
+├── embedder.py       # 子块向量化（DashScope text-embedding-v3 + 批次重试）
+└── ingestor.py       # 入库主流程（幂等 DDL + 双写 MySQL/Milvus）
+
+scripts/
+└── ingest_data.py    # CLI 命令行入口
+```
+
+#### 4.5.2 支持的文件格式
+
+| 格式 | 扩展名 | 依赖库 | 备注 |
+|------|--------|--------|------|
+| PDF | `.pdf` | pypdf | 文本型 PDF；扫描件需 Tesseract OCR |
+| Word | `.docx` | python-docx | 含段落和表格提取 |
+| Word (老版) | `.doc` | antiword / LibreOffice | 需系统安装，未安装则跳过 |
+| Excel | `.xlsx` `.xlsm` `.xls` | openpyxl / pandas | 多 Sheet 转管道符文本 |
+| CSV | `.csv` | pandas | 自动识别 UTF-8 / GBK 编码 |
+| PPT | `.pptx` | python-pptx | 逐幻灯片提取文本框 |
+| 纯文本 | `.txt` `.md` | 内置 | 自动识别编码（UTF-8/GBK） |
+| 图片 | `.png` `.jpg` `.jpeg` `.gif` `.bmp` `.webp` | Pillow | 仅返回元信息；OCR 需安装 Tesseract |
+
+#### 4.5.3 入库流程
+
+```
+上传文件 / CLI 指定路径
+      │
+      ▼
+[1] 幂等初始化
+      │  _ensure_mysql_schema()   — CREATE TABLE IF NOT EXISTS
+      │  _ensure_milvus_collection() — 若不存在则创建 dim=1024 集合
+      ▼
+[2] 文件解析 (file_parser.parse_file)
+      │  根据后缀分发到对应解析器，返回纯文本
+      ▼
+[3] 父子分块 (text_chunker.chunk_document)
+      │  父块: 1200 字符，重叠 50
+      │  子块: 300 字符，重叠 50
+      ▼
+[4] 向量化 (embedder.embed_texts)
+      │  批次 ≤ 10（API 限制）
+      │  失败自动重试 3 次
+      ▼
+[5] 写 MySQL
+      │  INSERT IGNORE INTO subject (幂等写学科)
+      │  INSERT INTO document (filepath 唯一约束，已入库则跳过)
+      │  批量 INSERT INTO parent_chunk
+      ▼
+[6] 写 Milvus
+      │  INSERT child 向量（字段: vector, parent_id, source）
+      ▼
+返回每个文件的结果 {status, parent_count, child_count, message}
+```
+
+#### 4.5.4 Embedding 规格
+
+| 参数 | 值 |
+|------|----|
+| 模型 | `text-embedding-v3` |
+| 向量维度 | **1024**（有效值 64/128/256/512/768/1024） |
+| 批次大小 | **10**（API 单次上限） |
+| 重试次数 | 3 次，间隔 2 秒 |
+| 接入方式 | OpenAI 兼容接口（与 LLM 一致） |
+
+#### 4.5.5 幂等保障
+
+- **重复入库保护**：`document` 表对 `filepath` 设 UNIQUE 约束，相同文件路径第二次入库时直接跳过
+- **重复学科保护**：使用 `INSERT IGNORE` 写 `subject` 表
+- **重建集合保护**：`_ensure_milvus_collection()` 先调用 `list_collections()` 检查，已存在则跳过
+
+---
+
 ### 4.4 学科过滤模块
 
 #### 4.4.1 支持学科
@@ -392,40 +486,36 @@ CREATE TABLE subject (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='学科元数据';
 ```
 
-#### 5.1.2 表：document (原始文档)
+#### 5.1.2 表：document (已入库文档)
 
 ```sql
-CREATE TABLE document (
-    id          BIGINT      UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    subject_id  INT         UNSIGNED NOT NULL               COMMENT '关联学科 ID',
-    title       VARCHAR(256) NOT NULL                       COMMENT '文档标题',
-    file_path   VARCHAR(512) NOT NULL                       COMMENT '文件存储路径',
-    file_type   VARCHAR(16)  NOT NULL                       COMMENT '文件类型: pdf/docx/txt',
-    chunk_count INT          NOT NULL DEFAULT 0             COMMENT '切分后 Parent Chunk 数量',
-    status      TINYINT(1)   NOT NULL DEFAULT 0             COMMENT '处理状态: 0待处理 1已入库 2失败',
-    created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    FOREIGN KEY (subject_id) REFERENCES subject(id),
-    INDEX idx_subject (subject_id),
-    INDEX idx_status  (status)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='原始文档记录';
+-- 由 app/ingest/ingestor.py _ensure_mysql_schema() 幂等创建
+CREATE TABLE IF NOT EXISTS `document` (
+    `id`            INT AUTO_INCREMENT PRIMARY KEY,
+    `subject_code`  VARCHAR(50)  NOT NULL                COMMENT '所属学科代码（冗余，加速查询）',
+    `filename`      VARCHAR(255) NOT NULL                COMMENT '原始文件名',
+    `filepath`      VARCHAR(512) NOT NULL                COMMENT '入库时文件绝对路径',
+    `char_count`    INT DEFAULT 0                        COMMENT '提取文本字符数',
+    `chunk_count`   INT DEFAULT 0                        COMMENT '父块数量',
+    `created_at`    DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY `uq_filepath` (`filepath`(255))           -- 幂等防重入库的核心约束
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='已入库文档表';
 ```
 
 #### 5.1.3 表：parent_chunk (父块存储)
 
 ```sql
-CREATE TABLE parent_chunk (
-    id          VARCHAR(64)  NOT NULL PRIMARY KEY           COMMENT '父块 UUID，与 Milvus child 的 parent_id 对应',
-    document_id BIGINT       UNSIGNED NOT NULL              COMMENT '关联文档 ID',
-    subject     VARCHAR(32)  NOT NULL                       COMMENT '学科代码',
-    content     MEDIUMTEXT   NOT NULL                       COMMENT '父块原文内容',
-    chunk_index INT          NOT NULL                       COMMENT '块在文档中的序号',
-    token_count INT          NOT NULL DEFAULT 0             COMMENT '块的 token 数量',
-    created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (document_id) REFERENCES document(id),
-    INDEX idx_document (document_id),
-    INDEX idx_subject  (subject)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='RAG 父块内容表';
+-- 由 app/ingest/ingestor.py _ensure_mysql_schema() 幂等创建
+CREATE TABLE IF NOT EXISTS `parent_chunk` (
+    `id`            INT AUTO_INCREMENT PRIMARY KEY,       -- Milvus child 的 parent_id 引用此字段
+    `document_id`   INT NOT NULL                         COMMENT '所属文档 ID',
+    `subject`       VARCHAR(50) NOT NULL                 COMMENT '学科代码（冗余，加速检索）',
+    `chunk_index`   INT NOT NULL                         COMMENT '在文档中的顺序编号（0-based）',
+    `content`       MEDIUMTEXT NOT NULL                  COMMENT '父块全文（最大 16MB）',
+    `created_at`    DATETIME DEFAULT CURRENT_TIMESTAMP,
+    INDEX `idx_document_id` (`document_id`),
+    INDEX `idx_subject`     (`subject`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='父块存储表';
 ```
 
 ### 5.2 Redis — 会话与缓存
@@ -443,11 +533,13 @@ CREATE TABLE parent_chunk (
 |------|----|
 | Database | `itcast` |
 | Collection | `edurag_bj29` |
-| 向量维度 | 1536 (text-embedding-v3) |
-| 索引类型 | IVF_FLAT |
+| 向量字段 | `vector` (FLOAT_VECTOR) |
+| **向量维度** | **1024**（text-embedding-v3 有效值，非 1536） |
+| 标量字段 | `parent_id` (INT64) · `source` (VARCHAR 50) |
+| 索引类型 | IVF_FLAT，nlist=128 |
 | 相似度度量 | IP (内积) |
-| Shard 数量 | 2 |
 | 副本数量 | 1（生产环境建议 2） |
+| 管理工具 | Attu（:30000 端口，Docker 容器 crazy_swartz） |
 
 ---
 
@@ -665,7 +757,110 @@ data: {"type": "error", "code": 5001, "message": "LLM 服务超时"}
 
 ---
 
-### 6.4 业务错误码
+### 6.4 知识库管理接口（v1.1 新增）
+
+#### POST /ingest/upload — 上传文件并入库
+
+**请求格式**: `multipart/form-data`
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `files` | File[] | 是 | 支持同时上传多个文件（批量或文件夹） |
+| `subject` | string | 是 | 学科代码（ai/java/test/ops/bigdata） |
+| `subject_name` | string | 否 | 学科中文名，不填则与 subject 相同 |
+
+**文件限制**：单文件最大 100MB，格式限于支持列表（§4.5.2）。
+
+**响应**:
+
+```json
+{
+  "summary": {
+    "total": 2,
+    "ok": 2,
+    "skipped": 0,
+    "error": 0
+  },
+  "results": [
+    {
+      "file": "LLM基础知识.pdf",
+      "status": "ok",
+      "parent_count": 8,
+      "child_count": 36,
+      "message": "入库成功"
+    },
+    {
+      "file": "人工智能就业课课程大纲.docx",
+      "status": "ok",
+      "parent_count": 10,
+      "child_count": 46,
+      "message": "入库成功"
+    }
+  ]
+}
+```
+
+**status 枚举**:
+
+| 值 | 含义 |
+|----|------|
+| `ok` | 入库成功 |
+| `skipped` | 已入库（幂等跳过）或内容为空 |
+| `error` | 解析/向量化/写库失败 |
+
+---
+
+#### GET /ingest/subjects — 获取学科与支持格式列表
+
+**响应**:
+
+```json
+{
+  "subjects": [
+    {"code": "ai", "name": "人工智能"},
+    {"code": "java", "name": "Java 开发"}
+  ],
+  "supported_formats": [".bmp", ".csv", ".doc", ".docx", ".gif",
+                        ".jpeg", ".jpg", ".md", ".pdf", ".png",
+                        ".pptx", ".txt", ".webp", ".xls", ".xlsm", ".xlsx"]
+}
+```
+
+---
+
+#### GET /ingest/documents — 查询已入库文档
+
+**查询参数**:
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `subject` | string | — | 按学科过滤，不填返回全部 |
+| `page` | int | 1 | 页码（≥1） |
+| `page_size` | int | 20 | 每页条数（1-100） |
+
+**响应**:
+
+```json
+{
+  "total": 2,
+  "page": 1,
+  "page_size": 20,
+  "documents": [
+    {
+      "id": 1,
+      "subject": "ai",
+      "filename": "LLM基础知识.pdf",
+      "char_count": 8261,
+      "chunk_count": 8,
+      "created_at": "2026-05-19 09:51:02"
+    }
+  ]
+}
+```
+
+---
+
+### 6.5 业务错误码
 
 | 错误码 | HTTP 状态 | 说明 |
 |--------|-----------|------|
@@ -675,9 +870,12 @@ data: {"type": "error", "code": 5001, "message": "LLM 服务超时"}
 | 1003 | 400 | 学科代码不合法 |
 | 2001 | 404 | 会话不存在或已过期 |
 | 3001 | 429 | 请求频率超限 |
+| 4001 | 415 | 上传文件格式不支持 |
+| 4002 | 400 | 上传文件列表为空 |
 | 5001 | 503 | LLM 服务不可用 |
 | 5002 | 503 | 向量检索服务不可用 |
 | 5003 | 503 | 数据库连接失败 |
+| 5004 | 503 | DASHSCOPE_API_KEY 未配置 |
 | 9999 | 500 | 系统内部错误 |
 
 ---
@@ -940,6 +1138,17 @@ GET /api/v1/health
 | 用户问题超出知识库范围 | 高 | 低 | 兜底回复 + 引导拨打客服 10086 |
 | Redis 会话数据丢失 | 低 | 低 | 会话可重建，仅影响历史记录，不影响核心功能 |
 | Prompt 注入攻击 | 中 | 中 | §9.3 防护措施 + 定期安全审计 |
+
+---
+
+---
+
+## 12. 变更记录
+
+| 版本 | 日期 | 变更内容 |
+|------|------|----------|
+| v1.0.0 | 2026-05-19 | 初始版本：RAG 问答、会话管理、学科过滤、前端页面 |
+| v1.1.0 | 2026-05-19 | 新增知识库入库模块（§4.5）：多格式文件解析、父子分块、Embedding 批次入库、HTTP 上传接口（§6.4）；修正 Embedding 维度为 1024；修正 MySQL 表 Schema；前端新增知识库管理页面 |
 
 ---
 

@@ -154,6 +154,22 @@ class InternVLVision:
 
 # ─── OCR（PaddleOCR 3.x，中英文混排优化）────────────────────────────────────
 class PaddleOCREngine:
+    """
+           初始化PaddleOCR引擎
+
+           Args:
+               lang: OCR识别语言类型，默认为"ch"（简体中文）。
+                     可选值："ch"（中文）、"en"（英文）、"korean"、"japan"等
+               use_gpu: 是否使用GPU加速推理，默认为True。
+                       无GPU时自动降级到CPU模式
+
+           Note:
+               PaddleOCR关键配置参数说明：
+               - use_angle_cls: 启用文字方向分类器，自动纠正旋转文本（0°/90°/180°/270°）
+               - det_db_box_thresh: 文本检测置信度阈值（0-1），设为0.3降低漏检率，适合模糊文档
+               - rec_batch_num: 识别阶段批处理大小，设为8平衡显存占用和推理速度
+               - show_log: 关闭详细日志输出，避免控制台噪音
+    """
     def __init__(self, lang: str = "ch", use_gpu: bool = True):
         self.ocr = PaddleOCR(
             use_angle_cls=True,
@@ -165,12 +181,36 @@ class PaddleOCREngine:
         )
 
     def extract_text(self, img_path_or_bytes) -> str:
-        """提取图片中的文字，保留布局顺序"""
+        """提取图片中的文字，保留布局顺序
+
+        提取图片中的文字内容
+
+        对OCR识别结果进行后处理，按从上到下的阅读顺序拼接文本行。
+
+        x = [
+            [[10, 20], [100, 20], [100, 50], [10, 50]],  # 这是 x[0]：4个顶点坐标信息 (Box)
+            ("人工智能", 0.99)                            # 这是 x[1]：内容信息 (Text, Score)
+        ]
+
+        Args:
+            img_path_or_bytes: 图片文件路径（str）或图片二进制数据（bytes）
+
+        Returns:
+            提取的文本内容，每行之间用换行符分隔
+
+        Note:
+            OCR返回的数据结构说明：
+            - result是一个列表，每个元素代表一页的识别结果
+            - 每页包含多个识别项，每项格式为：[坐标框, (文本, 置信度)]
+            - 坐标框格式：[[x0,y0], [x1,y1], [x2,y2], [x3,y3]]
+            - 通过y坐标（x[0][0][1]）排序确保文本按从上到下的顺序排列
+        """
         result = self.ocr.ocr(img_path_or_bytes, cls=True)
         lines = []
         for page in result:
             if page:
                 # 按 y 坐标排序保证阅读顺序
+                # 获取图片左上角坐标的y坐标（高度），进行排序
                 sorted_lines = sorted(page, key=lambda x: x[0][0][1])
                 lines.extend([item[1][0] for item in sorted_lines])
         return "\n".join(lines)

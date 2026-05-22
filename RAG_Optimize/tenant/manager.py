@@ -13,6 +13,21 @@ import redis   # 配额计数器用 Redis
 
 @dataclass
 class TenantConfig:
+    """
+       租户配置信息数据类
+
+       用于存储和管理单个租户的配置参数和配额限制。
+
+       Attributes:
+           tenant_id: 租户唯一标识符，用于区分不同租户
+           name: 租户显示名称，用于人类可读的标识
+           max_docs: 最大文档数量配额，默认为10,000篇文档
+           max_storage_mb: 最大存储空间配额（单位：MB），默认为5,000 MB（约5 GB）
+           max_qps: 每秒查询率限制（Queries Per Second），默认为20 QPS
+           api_key_hash: API密钥的SHA256哈希值，用于身份验证，初始为空字符串
+           created_at: 租户创建时间戳（Unix时间戳），自动设置为当前时间
+           extra: 扩展参数字典，用于存储额外的自定义配置，默认为空字典
+       """
     tenant_id: str
     name: str
     max_docs: int = 10_000
